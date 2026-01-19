@@ -4,12 +4,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.provider.Telephony
-import android.util.Log
 import kotlin.concurrent.thread
 
 class SmsReceiver : BroadcastReceiver() {
     companion object {
-        private const val TAG = "SmsReceiver"
         private const val PREFS_NAME = "SmsForwarderPrefs"
         private const val SENT_IDS_KEY = "sent_sms_ids"
     }
@@ -24,9 +22,9 @@ class SmsReceiver : BroadcastReceiver() {
             return
         }
 
-        val config = ConfigReader.readConfig()
+        val config = ConfigManager.getConfig(context)
         if (config == null) {
-            Log.e(TAG, "Config not available, cannot forward SMS")
+            Logger.log(context, "SMS received but config not set, cannot forward")
             return
         }
 
@@ -37,14 +35,19 @@ class SmsReceiver : BroadcastReceiver() {
                 val timestamp = sms.timestampMillis
                 val smsId = "${sender}_${timestamp}"
 
+                Logger.log(context, "SMS received from: $sender")
+
                 if (isSmsSent(context, smsId)) {
-                    Log.d(TAG, "SMS already sent: $smsId")
+                    Logger.log(context, "SMS already forwarded, skipping: $smsId")
                     continue
                 }
 
-                if (TelegramSender.sendMessage(config, sender, body)) {
+                Logger.log(context, "Forwarding SMS to Telegram...")
+                if (TelegramSender.sendMessage(context, config, sender, body)) {
                     markSmsSent(context, smsId)
-                    Log.d(TAG, "SMS forwarded successfully: $smsId")
+                    Logger.log(context, "SMS forwarded successfully")
+                } else {
+                    Logger.log(context, "Failed to forward SMS")
                 }
             }
         }
