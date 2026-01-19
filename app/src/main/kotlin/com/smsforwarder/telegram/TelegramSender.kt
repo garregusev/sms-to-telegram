@@ -1,20 +1,32 @@
 package com.smsforwarder.telegram
 
-import android.util.Log
+import android.content.Context
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 
 object TelegramSender {
-    private const val TAG = "TelegramSender"
     private const val TELEGRAM_API_URL = "https://api.telegram.org/bot"
 
-    fun sendMessage(config: TelegramConfig, sender: String, messageBody: String): Boolean {
-        return try {
-            val text = "📱 Sender: $sender\n💬 Message: $messageBody"
-            val url = URL("${TELEGRAM_API_URL}${config.botToken}/sendMessage")
+    fun sendMessage(context: Context, config: TelegramConfig, sender: String, messageBody: String): Boolean {
+        val text = "📱 Sender: $sender\n💬 Message: $messageBody"
+        return sendToTelegram(context, config, text)
+    }
 
+    fun sendTestMessage(context: Context, config: TelegramConfig): Boolean {
+        val text = "Test from SMS Forwarder"
+        Logger.log(context, "Sending test message to Telegram...")
+        return sendToTelegram(context, config, text)
+    }
+
+    private fun sendToTelegram(context: Context, config: TelegramConfig, text: String): Boolean {
+        return try {
+            Logger.log(context, "Telegram API request started")
+
+            val url = URL("${TELEGRAM_API_URL}${config.botToken}/sendMessage")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.doOutput = true
@@ -30,33 +42,24 @@ object TelegramSender {
             }
 
             val responseCode = connection.responseCode
-            connection.disconnect()
 
             if (responseCode == HttpURLConnection.HTTP_OK) {
-                Log.d(TAG, "Message sent successfully")
+                Logger.log(context, "Telegram send success (HTTP $responseCode)")
+                connection.disconnect()
                 true
             } else {
-                Log.e(TAG, "Failed to send message. Response code: $responseCode")
+                val errorResponse = try {
+                    BufferedReader(InputStreamReader(connection.errorStream)).use { it.readText() }
+                } catch (e: Exception) {
+                    "Unable to read error response"
+                }
+                Logger.log(context, "Telegram send failed (HTTP $responseCode): $errorResponse")
+                connection.disconnect()
                 false
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error sending message to Telegram: ${e.message}")
+            Logger.log(context, "Telegram send error: ${e.message}")
             false
         }
-    }
-
-    fun sendMessagesWithDelay(config: TelegramConfig, messages: List<Pair<String, String>>): List<Int> {
-        val sentIndices = mutableListOf<Int>()
-
-        messages.forEachIndexed { index, (sender, body) ->
-            if (sendMessage(config, sender, body)) {
-                sentIndices.add(index)
-            }
-            if (index < messages.size - 1) {
-                Thread.sleep(2000)
-            }
-        }
-
-        return sentIndices
     }
 }

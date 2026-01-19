@@ -2,9 +2,11 @@
 
 ## Overview
 
-This Android app forwards SMS messages to Telegram using two complementary mechanisms:
+This Android app forwards SMS messages to Telegram using multiple mechanisms:
 1. **Real-time forwarding** via BroadcastReceiver when SMS arrives
 2. **Periodic backup check** via WorkManager every hour for missed messages
+3. **Foreground service** for reliable background operation
+4. **In-app UI** for configuration and debugging
 
 ## File Structure
 
@@ -13,11 +15,17 @@ app/src/main/
 ├── AndroidManifest.xml
 ├── kotlin/com/smsforwarder/telegram/
 │   ├── App.kt              # Application entry point
-│   ├── ConfigReader.kt     # JSON config file reader
+│   ├── MainActivity.kt     # Main UI activity
+│   ├── ConfigManager.kt    # SharedPreferences config storage
+│   ├── Logger.kt           # Logging utility with SharedPreferences
+│   ├── ForwarderService.kt # Foreground service
 │   ├── SmsReceiver.kt      # BroadcastReceiver for incoming SMS
 │   ├── SmsChecker.kt       # WorkManager periodic worker
 │   └── TelegramSender.kt   # Telegram API client
-└── res/                    # Resources (icons, strings, themes)
+└── res/
+    ├── layout/
+    │   └── activity_main.xml  # Main UI layout
+    └── values/                # Resources (colors, strings, themes)
 ```
 
 ### File Purposes
@@ -27,45 +35,64 @@ app/src/main/
 - Initializes on app startup
 - Schedules the periodic WorkManager task with `ExistingPeriodicWorkPolicy.KEEP`
 
-**ConfigReader.kt**
-- Reads JSON config from `/sdcard/Download/sms-forwarder-config.json`
-- Returns `Config` data class with `botToken` and `chatId`
-- Returns `null` if file missing or invalid (no crash)
+**MainActivity.kt**
+- Main UI activity with configuration and debugging interface
+- Displays permission status (SMS, Notifications)
+- Provides config input fields (bot token, chat ID)
+- Action buttons: Send Test Message, Check SMS Now, Clear Logs
+- Shows next scheduled WorkManager check time
+- Displays scrollable log view with selectable text
+- Starts the foreground service on launch
+
+**ConfigManager.kt**
+- Stores configuration in SharedPreferences (`SmsForwarderConfig`)
+- Provides `saveConfig()`, `getConfig()`, `isConfigured()` methods
+- Returns `TelegramConfig` data class with `botToken` and `chatId`
+- Returns `null` if config not set
+
+**Logger.kt**
+- Writes timestamped logs to SharedPreferences (`SmsForwarderLogs`)
+- Format: `[YYYY-MM-DD HH:MM:SS] message`
+- Max 1000 entries, 30-day retention
+- Provides `LogListener` interface for real-time UI updates
+- Methods: `log()`, `getLogs()`, `clearLogs()`
+
+**ForwarderService.kt**
+- Foreground service with persistent notification
+- Shows "SMS Forwarder running" notification
+- Uses `FOREGROUND_SERVICE_SPECIAL_USE` for SMS forwarding use case
+- Static `start()` and `stop()` methods for control
 
 **SmsReceiver.kt**
 - Registered in manifest for `android.provider.Telephony.SMS_RECEIVED`
-- Extracts sender and message body from PDU
+- Extracts sender and message body using `Telephony.Sms.Intents`
 - Calls TelegramSender and marks as sent in SharedPreferences
+- Logs all events via Logger
 
 **SmsChecker.kt**
-- WorkManager `Worker` subclass
+- WorkManager `Worker` subclass for periodic inbox checks
 - Queries SMS inbox via ContentResolver
 - Filters unsent messages using SharedPreferences
 - Sends each with 2-second delay between batches
+- Static `checkNow()` method for manual triggering
+- Logs all events via Logger
 
 **TelegramSender.kt**
 - Static utility for Telegram API calls
 - Uses `HttpURLConnection` (no external HTTP libraries)
-- Manages SharedPreferences for sent message tracking
+- `sendMessage()` for SMS forwarding
+- `sendTestMessage()` for configuration testing
+- Logs success/failure with HTTP response codes
 
 ## How SMS Receiving Works (BroadcastReceiver)
 
 1. Android system broadcasts `SMS_RECEIVED` intent when SMS arrives
 2. `SmsReceiver.onReceive()` is triggered by the system
-3. PDU (Protocol Data Unit) is extracted from intent extras
-4. `SmsMessage.createFromPdu()` parses sender and body
-5. `TelegramSender.sendSms()` forwards to Telegram
+3. Messages extracted via `Telephony.Sms.Intents.getMessagesFromIntent()`
+4. Config loaded from SharedPreferences via ConfigManager
+5. `TelegramSender.sendMessage()` forwards to Telegram
 6. Message ID stored in SharedPreferences to prevent duplicates
-
-```kotlin
-// Intent contains PDU array
-val pdus = intent.extras?.get("pdus") as? Array<*>
-for (pdu in pdus) {
-    val message = SmsMessage.createFromPdu(pdu as ByteArray, format)
-    val sender = message.displayOriginatingAddress
-    val body = message.messageBody
-}
-```
+7. All events logged via Logger
 
 ## How Hourly Check Works (WorkManager)
 
@@ -81,6 +108,7 @@ for (pdu in pdus) {
 4. Each SMS is checked against SharedPreferences
 5. Unsent messages are forwarded with 2-second delays
 6. Returns `Result.success()` to signal completion
+7. All events logged via Logger
 
 ## How Deduplication Works
 
@@ -90,45 +118,55 @@ Messages are tracked using SharedPreferences with composite keys:
 
 Example: `+15551234567_1699876543210`
 
-**Storage Location:** Default SharedPreferences file
+**Storage Location:** SharedPreferences file `SmsForwarderPrefs`
 
 **Tracking Flow:**
-1. Before sending, check if key exists: `prefs.contains(key)`
+1. Before sending, check if key exists in StringSet
 2. If exists, skip (already sent)
 3. If not exists, send to Telegram
-4. After successful send, store: `prefs.edit().putBoolean(key, true).apply()`
+4. After successful send, add to StringSet
 
 This approach handles:
 - Duplicate broadcasts from BroadcastReceiver
 - Messages already sent in real-time being re-scanned by hourly check
 - App restarts (SharedPreferences persists)
 
-## Config File Format and Location
+## Configuration Storage
 
-**Location:** `/sdcard/Download/sms-forwarder-config.json`
+**Location:** SharedPreferences file `SmsForwarderConfig`
 
-This path maps to the device's internal storage Download folder, typically:
-- `/storage/emulated/0/Download/sms-forwarder-config.json`
-
-**Format:**
-```json
-{
-  "bot_token": "123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
-  "chat_id": "987654321"
-}
-```
+**Keys:**
+- `bot_token` - Telegram bot token string
+- `chat_id` - Telegram chat ID string
 
 **Reading Logic:**
 ```kotlin
-val file = File("/sdcard/Download/sms-forwarder-config.json")
-if (!file.exists()) return null
-
-val json = JSONObject(file.readText())
-return Config(
-    botToken = json.getString("bot_token"),
-    chatId = json.getString("chat_id")
-)
+val prefs = context.getSharedPreferences("SmsForwarderConfig", MODE_PRIVATE)
+val botToken = prefs.getString("bot_token", "") ?: ""
+val chatId = prefs.getString("chat_id", "") ?: ""
+if (botToken.isEmpty() || chatId.isEmpty()) return null
+return TelegramConfig(botToken, chatId)
 ```
+
+## Logging System
+
+**Location:** SharedPreferences file `SmsForwarderLogs`
+
+**Format:** `[YYYY-MM-DD HH:MM:SS] message`
+
+**Events logged:**
+- App started
+- Config saved
+- Permission granted/denied
+- SMS received (with sender)
+- Telegram send attempt
+- Telegram send success/failure (with HTTP code and error)
+- WorkManager check started/completed
+- Service started/stopped
+
+**Retention:**
+- Max 1000 log entries
+- Entries older than 30 days automatically removed
 
 ## Telegram API Usage
 
@@ -148,19 +186,7 @@ return Config(
 💬 Message: {message_body}
 ```
 
-**Implementation:**
-```kotlin
-val url = URL("https://api.telegram.org/bot$botToken/sendMessage")
-val connection = url.openConnection() as HttpURLConnection
-connection.requestMethod = "POST"
-connection.doOutput = true
-
-val postData = "chat_id=${URLEncoder.encode(chatId, "UTF-8")}" +
-               "&text=${URLEncoder.encode(text, "UTF-8")}"
-
-connection.outputStream.use { it.write(postData.toByteArray()) }
-val responseCode = connection.responseCode
-```
+**Test Message:** `Test from SMS Forwarder`
 
 **Batch Delay:** 2 seconds between messages when sending multiple (prevents rate limiting)
 
@@ -185,5 +211,18 @@ Note: Release builds are unsigned. For production, configure signing in `app/bui
 
 - **AndroidX WorkManager** (`androidx.work:work-runtime-ktx:2.9.0`) - Periodic background tasks
 - **AndroidX Core KTX** (`androidx.core:core-ktx:1.12.0`) - Kotlin extensions
+- **AndroidX AppCompat** (`androidx.appcompat:appcompat:1.6.1`) - Backward-compatible Activity
+- **Material Components** (`com.google.android.material:material:1.11.0`) - UI components
+- **AndroidX Activity KTX** (`androidx.activity:activity-ktx:1.8.2`) - Activity result APIs
 - No external HTTP libraries (uses `java.net.HttpURLConnection`)
-- No external JSON libraries (uses `org.json.JSONObject` from Android SDK)
+
+## Permissions
+
+| Permission | Purpose |
+|------------|---------|
+| `RECEIVE_SMS` | Detect incoming SMS messages in real-time |
+| `READ_SMS` | Read SMS content and check inbox for missed messages |
+| `INTERNET` | Send messages to Telegram API |
+| `POST_NOTIFICATIONS` | Show persistent notification for foreground service |
+| `FOREGROUND_SERVICE` | Run service in foreground |
+| `FOREGROUND_SERVICE_SPECIAL_USE` | Special use case for SMS forwarding |
