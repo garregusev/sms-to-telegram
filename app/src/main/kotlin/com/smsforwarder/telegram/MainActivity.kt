@@ -3,6 +3,7 @@ package com.smsforwarder.telegram
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
@@ -25,8 +26,14 @@ class MainActivity : AppCompatActivity(), Logger.LogListener {
     private lateinit var editChatId: TextInputEditText
     private lateinit var textNextCheck: TextView
     private lateinit var textLogs: TextView
+    private lateinit var buttonCheckSms: Button
+    private lateinit var buttonStopSending: Button
+    private lateinit var textSendingProgress: TextView
 
     private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+
+    @Volatile
+    private var isSending = false
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -36,6 +43,11 @@ class MainActivity : AppCompatActivity(), Logger.LogListener {
             Logger.log(this, "Permission $permission: $status")
         }
         updatePermissionStatus()
+
+        // Initialize first run after SMS permission is granted
+        if (checkPermission(Manifest.permission.READ_SMS)) {
+            initializeFirstRunIfNeeded()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -52,6 +64,11 @@ class MainActivity : AppCompatActivity(), Logger.LogListener {
         textLogs.text = Logger.getLogs(this)
 
         Logger.log(this, "App started")
+
+        // Initialize first run if SMS permission is already granted
+        if (checkPermission(Manifest.permission.READ_SMS)) {
+            initializeFirstRunIfNeeded()
+        }
 
         // Start foreground service
         ForwarderService.start(this)
@@ -75,6 +92,9 @@ class MainActivity : AppCompatActivity(), Logger.LogListener {
         editChatId = findViewById(R.id.editChatId)
         textNextCheck = findViewById(R.id.textNextCheck)
         textLogs = findViewById(R.id.textLogs)
+        buttonCheckSms = findViewById(R.id.buttonCheckSms)
+        buttonStopSending = findViewById(R.id.buttonStopSending)
+        textSendingProgress = findViewById(R.id.textSendingProgress)
     }
 
     private fun setupListeners() {
@@ -90,8 +110,12 @@ class MainActivity : AppCompatActivity(), Logger.LogListener {
             sendTestMessage()
         }
 
-        findViewById<Button>(R.id.buttonCheckSms).setOnClickListener {
+        buttonCheckSms.setOnClickListener {
             triggerSmsCheck()
+        }
+
+        buttonStopSending.setOnClickListener {
+            stopSending()
         }
 
         findViewById<Button>(R.id.buttonClearLogs).setOnClickListener {
@@ -150,6 +174,14 @@ class MainActivity : AppCompatActivity(), Logger.LogListener {
         permissionLauncher.launch(permissions)
     }
 
+    private fun initializeFirstRunIfNeeded() {
+        if (!SmsChecker.isInitialized(this)) {
+            thread {
+                SmsChecker.initializeFirstRun(this)
+            }
+        }
+    }
+
     private fun sendTestMessage() {
         val config = ConfigManager.getConfig(this)
         if (config == null) {
@@ -173,22 +205,51 @@ class MainActivity : AppCompatActivity(), Logger.LogListener {
     }
 
     private fun triggerSmsCheck() {
+        if (isSending) {
+            Toast.makeText(this, "Already sending...", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val config = ConfigManager.getConfig(this)
+        if (config == null) {
+            Toast.makeText(this, "Please configure settings first", Toast.LENGTH_SHORT).show()
+            return
+        }
+
         Logger.log(this, "Manual SMS check triggered")
-        Toast.makeText(this, "Checking SMS...", Toast.LENGTH_SHORT).show()
+        setSendingState(true)
 
         thread {
-            val config = ConfigManager.getConfig(this)
-            if (config == null) {
-                runOnUiThread {
-                    Toast.makeText(this, "Please configure settings first", Toast.LENGTH_SHORT).show()
+            SmsChecker.checkNow(this, config, object : SmsChecker.Companion.ProgressListener {
+                override fun onProgress(current: Int, total: Int) {
+                    runOnUiThread {
+                        textSendingProgress.text = "Sending $current/$total..."
+                    }
                 }
-                return@thread
-            }
 
-            SmsChecker.checkNow(this, config)
-            runOnUiThread {
-                Toast.makeText(this, "SMS check completed", Toast.LENGTH_SHORT).show()
-            }
+                override fun onComplete() {
+                    runOnUiThread {
+                        setSendingState(false)
+                        Toast.makeText(this@MainActivity, "SMS check completed", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            })
+        }
+    }
+
+    private fun stopSending() {
+        SmsChecker.cancelSending()
+        Logger.log(this, "Stop requested by user")
+        Toast.makeText(this, "Stopping...", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun setSendingState(sending: Boolean) {
+        isSending = sending
+        buttonCheckSms.visibility = if (sending) View.GONE else View.VISIBLE
+        buttonStopSending.visibility = if (sending) View.VISIBLE else View.GONE
+        textSendingProgress.visibility = if (sending) View.VISIBLE else View.GONE
+        if (!sending) {
+            textSendingProgress.text = ""
         }
     }
 
