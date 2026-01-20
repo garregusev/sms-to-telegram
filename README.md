@@ -5,11 +5,15 @@ An Android app that automatically forwards incoming SMS messages to a Telegram c
 ## Features
 
 - Instant forwarding of incoming SMS via BroadcastReceiver
-- Hourly background check for any missed messages via WorkManager
+- Hourly background check for any missed messages via WorkManager (last 48 hours only)
 - Duplicate prevention using message tracking
 - In-app configuration (no config file needed)
 - Built-in logging for debugging
 - Foreground service for reliable operation
+- First run protection: existing SMS marked as processed, not sent
+- Batch limit: max 20 messages per check to prevent flooding
+- Stop button to cancel sending in progress
+- Progress indicator during batch sending
 - Minimum SDK: Android 13 (API 33)
 
 ## Installation
@@ -72,7 +76,9 @@ The app provides a simple interface with:
 - **Configuration Section**: Enter and save your Telegram bot token and chat ID
 - **Actions Section**:
   - Send Test Message - verify your configuration works
-  - Check SMS Now - manually trigger an SMS inbox check
+  - Check SMS Now - manually trigger an SMS inbox check (last 48 hours, max 20 messages)
+  - Stop - cancel sending in progress (appears only while sending)
+  - Progress indicator: "Sending 3/15..." during batch sending
   - Shows next scheduled automatic check time
 - **Logs Section**: View activity logs for debugging (selectable/copyable text)
 
@@ -98,9 +104,11 @@ Forwarded messages appear in Telegram as:
 ## How It Works
 
 1. **Real-time Forwarding**: When an SMS arrives, the BroadcastReceiver immediately forwards it to Telegram
-2. **Backup Check**: Every hour, WorkManager checks the SMS inbox for any messages that might have been missed
+2. **Backup Check**: Every hour, WorkManager checks the SMS inbox (last 48 hours only) for any messages that might have been missed
 3. **Deduplication**: Each message is tracked using `{sender}_{timestamp}` keys in SharedPreferences to prevent duplicates
 4. **Foreground Service**: Ensures the app stays active and responsive
+5. **First Run Protection**: On first launch, all existing SMS are marked as "processed" without sending to prevent flooding
+6. **Batch Limit**: Maximum 20 messages per check to prevent Telegram rate limiting
 
 ## Troubleshooting
 

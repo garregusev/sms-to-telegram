@@ -39,10 +39,13 @@ app/src/main/
 - Main UI activity with configuration and debugging interface
 - Displays permission status (SMS, Notifications)
 - Provides config input fields (bot token, chat ID)
-- Action buttons: Send Test Message, Check SMS Now, Clear Logs
+- Action buttons: Send Test Message, Check SMS Now, Stop, Clear Logs
+- Stop button appears during sending, hides Check SMS Now button
+- Shows sending progress: "Sending 3/15..."
 - Shows next scheduled WorkManager check time
 - Displays scrollable log view with selectable text
 - Starts the foreground service on launch
+- Triggers first run initialization when SMS permission is granted
 
 **ConfigManager.kt**
 - Stores configuration in SharedPreferences (`SmsForwarderConfig`)
@@ -71,10 +74,12 @@ app/src/main/
 
 **SmsChecker.kt**
 - WorkManager `Worker` subclass for periodic inbox checks
-- Queries SMS inbox via ContentResolver
+- Queries SMS inbox via ContentResolver (last 48 hours only)
 - Filters unsent messages using SharedPreferences
-- Sends each with 2-second delay between batches
-- Static `checkNow()` method for manual triggering
+- Sends each with 2-second delay between batches (max 20 per batch)
+- Static `checkNow()` method for manual triggering with progress callback
+- Static `cancelSending()` method for user-initiated cancellation
+- First run initialization: marks existing SMS as processed without sending
 - Logs all events via Logger
 
 **TelegramSender.kt**
@@ -105,10 +110,38 @@ app/src/main/
    ```kotlin
    contentResolver.query(Uri.parse("content://sms/inbox"), ...)
    ```
-4. Each SMS is checked against SharedPreferences
-5. Unsent messages are forwarded with 2-second delays
-6. Returns `Result.success()` to signal completion
-7. All events logged via Logger
+4. Only SMS from last 48 hours are considered
+5. Each SMS is checked against SharedPreferences
+6. Unsent messages are forwarded with 2-second delays (max 20 per batch)
+7. Returns `Result.success()` to signal completion
+8. All events logged via Logger
+
+## Flooding Prevention
+
+Multiple safeguards prevent SMS flooding on fresh install or when checking old messages:
+
+**48-Hour Time Limit**
+- SMS queries filter by `date > (System.currentTimeMillis() - 48 hours)`
+- Old messages are never considered for forwarding
+
+**First Run Initialization**
+- `is_initialized` flag in SharedPreferences tracks first run
+- On first launch (with SMS permission), all existing SMS within 48h are marked as "sent"
+- No messages are actually sent during initialization
+- Log: "First run: marked X existing SMS as processed"
+
+**Batch Size Limit**
+- Maximum 20 messages per check (manual or WorkManager)
+- If more found: "Found X messages, sending first 20"
+
+**Cancellation Support**
+- `AtomicBoolean` flag checked between each message send
+- User can press Stop button to cancel mid-batch
+- Log: "Sending cancelled by user"
+
+**Progress Feedback**
+- UI shows "Sending 3/15..." during batch sending
+- Stop button visible only while sending is in progress
 
 ## How Deduplication Works
 
